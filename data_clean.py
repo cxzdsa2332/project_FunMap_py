@@ -1,5 +1,6 @@
 #import sys
 #sys.modules[__name__].__dict__.clear()
+import math
 import pandas as pd
 import numpy as np
 import seaborn as sns
@@ -25,4 +26,8 @@ i=2
 df_pheno0 = df_pheno.loc[map(lambda x:int(x),df_geno.iloc[i,:][df_geno.iloc[i,:]==0].index)]
 df_pheno1 = df_pheno.loc[map(lambda x:int(x),df_geno.iloc[i,:][df_geno.iloc[i,:]==1].index)]
 df_pheno2 = df_pheno.loc[map(lambda x:int(x),df_geno.iloc[i,:][df_geno.iloc[i,:]==2].index)]
-print(df_pheno0)
+y_all = pd.concat([df_pheno0,df_pheno1,df_pheno2])
+
+def get_miu(par):
+    """mean_vector of growth curve"""
+    miu = par[1]/(1+par[2]*math.exp(-par[3])
