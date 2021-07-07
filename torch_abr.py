@@ -27,10 +27,10 @@ def get_det_V(phi):
     det_V = 1/(1-phi**2)
     return det_V
 
-t = np.arange(1,11)
+t = np.arange(1,101)
 np.random.default_rng(2021)
 X = np.random.multivariate_normal(get_miu([10,3,0.5]),
-                                  np.sqrt(1.5)**2 * get_V(0.5), 10000)
+                                  np.sqrt(1.5)**2 * get_V(0.5), 100)
 # 转化成张量
 t = torch.tensor(t, requires_grad=False)
 X = torch.tensor(X, requires_grad=False)
@@ -52,13 +52,13 @@ def mle(t,X,params):
     mu = get_mu_model(t, a, b, r)
     cov = get_AR1(sigma,phi)
     dist = torch.distributions.MultivariateNormal(mu, cov)
-    LogLikelihood = -torch.sum(dist.log_prob(X))
+    LogLikelihood = -torch.mean(dist.log_prob(X))
     return LogLikelihood
 
-params = torch.tensor([5.0, 2.0, 0.1, 5.0, 0.01], requires_grad=True)
+params = torch.tensor([5.0, 2.0, 0.1, 5.0, 0.1], requires_grad=True)
 
 # 定义模型优化器
-optimizer = torch.optim.Adam([params], lr=1e-1)
+optimizer = torch.optim.Adam([params], lr=1e-2)
 
 def training_loop(n_epochs, optimizer, params, X, t):
     for epoch in range(1, n_epochs + 1):
@@ -74,12 +74,12 @@ def training_loop(n_epochs, optimizer, params, X, t):
 torch.cuda.synchronize()
 start = time.time()
 params_hat = training_loop(
-    n_epochs = 200,
+    n_epochs = 1000,
     optimizer = optimizer,
     params = params,
     X = X,
     t = t)
 torch.cuda.synchronize()
 end = time.time()
-print("time_elipse=", format(end-start))
+print("time_elipse =", format(end-start))
 print("par: {}, par_hat: {}".format([10,3,0.5,np.sqrt(1.5),0.5], params))
