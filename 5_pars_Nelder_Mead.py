@@ -1,9 +1,4 @@
 import numpy as np
-import pandas as pd
-from matplotlib import pyplot as plt
-import seaborn as sns
-from statsmodels import api
-from scipy import stats
 from scipy.optimize import minimize
 from scipy.linalg import toeplitz
 from scipy.stats import multivariate_normal
@@ -43,9 +38,6 @@ def mle(parameters):
     LL = -1 * np.sum(np.log(f.pdf(X)))
     return LL
 
-
-
-
 def mle2(parameters):
     n,d = X.shape
     curve_par = parameters[0:3]
@@ -57,5 +49,5 @@ def mle2(parameters):
     return -logL
 
 mle_model = minimize(mle,[6,1,1,5,0.1],method='Nelder-Mead')
-#mle_model2 = minimize(mle2,[5,1,1,2,0.5],method='Nelder-Mead')
+#mle_model2 = minimize(mle2,[5,1,1,2,0.1],method='Nelder-Mead')
 print(mle_model)
