@@ -71,19 +71,19 @@ def get_mu(mu_par):
     mu = a/(1 + b * torch.exp(-r * t))
     return mu
 
-def Q_maximization(n_epochs, optimizer):
+def Q_maximization(n_epochs, optimizer, omega):
     for epoch in range(1, n_epochs + 1):
-        Q_function = Q(mu_params, cov_params)
+        Q_function = Q(mu_params, cov_params, omega)
         optimizer.zero_grad()
         Q_function.backward()
         optimizer.step()
-        if epoch % 100 == 0:
-            print('Epoch %d, LogLikelihood %f' % (epoch, float(Q_function)))
+        if epoch % 10000 == 0:
+            print('Epoch %d, Q_function %f' % (epoch, float(Q_function)))
     return [mu_params,cov_params]
 
 
 
-def Q(mu_params, cov_params):
+def Q(mu_params, cov_params, omega):
     mu = list(map(lambda k: get_mu(k),mu_params))
     cov = get_AR1(cov_params)
     mvn_log = []
@@ -103,29 +103,27 @@ cov_params = torch.tensor([1.0,0.1],requires_grad=True)
 
 prob=np.array([0.3,0.3,0.4])
 
+k=3
 
-
-def EM(mu_par,cov_par,pro):
+def EM(mu_params,cov_params,prob):
     n, d = X.shape
-    mu = list((map(lambda k: get_mu(k), mu_params)))
-    cov = get_AR1(cov_params)
-    #E step
-    mu_np = list(map(lambda x:x.detach().numpy(),mu))
-    cov_np = cov.detach().numpy()
-    mvn = np.array(list(map(lambda k: multivariate_normal(k, cov_np).pdf(X), mu_np))).T * prob
-    omega = mvn / np.sum(mvn, axis=1).reshape(n, 1)
-    print("iter =", i, "  Loglikelihood =", format(-sum(np.log(np.sum(mvn,axis=1)))))
+    for i in np.arange(11):
+        # E step
+        mu = list((map(lambda k: get_mu(k), mu_params)))
+        cov = get_AR1(cov_params)
 
-    #M step
-    prob = np.sum(omega,axis=0)/np.sum(omega)
-    omega = torch.tensor(omega, requires_grad=False)
-    optimizer = torch.optim.Adam([mu_params, cov_params], lr=1e-2)
-    par_hat = Q_maximization(n_epochs = 1000,optimizer = optimizer)
+        mu_np = list(map(lambda x:x.detach().numpy(),mu))
+        cov_np = cov.detach().numpy()
+        mvn = np.array(list(map(lambda k: multivariate_normal(k, cov_np).pdf(X), mu_np))).T * prob
+        omega = mvn / np.sum(mvn, axis=1).reshape(n, 1)
+        print("iter =", i, "  Loglikelihood =", format(-sum(np.log(np.sum(mvn,axis=1)))))
 
-    return
-
-
-
+        #M step
+        prob = np.sum(omega,axis=0)/np.sum(omega)
+        omega = torch.tensor(omega, requires_grad=False)
+        optimizer = torch.optim.Adam([mu_params, cov_params], lr=1e-2)
+        par_hat = Q_maximization(n_epochs = 100,optimizer = optimizer,omega=omega)
+    return par_hat
 
 
-
+result = EM(mu_params,cov_params,prob)
