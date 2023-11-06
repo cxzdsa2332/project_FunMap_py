@@ -1,0 +1,324 @@
+globals().clear()
+import torch
+import numpy as np
+from sklearn.cluster import KMeans
+import scipy
+device = torch.device('cuda' if torch.cuda.is_available else 'cpu')
+device = 'cpu'
+torch.set_default_device(device)
+torch.set_default_dtype(torch.float64)
+#torch.set_num_threads(1)
+
+
+#simulate dataset
+def get_SAD1(pars, d):
+    """SAD1 covariance structure.
+    return a dxd size of covariance matrix regardless of times(length=d)
+    only accept two parameters to model such matrix"""
+    phi, gamma = pars[0], pars[1]
+    diag = (1 - phi ** (2 * np.linspace(1, d, d))) / (1 - phi ** 2)
+    SIGMA = diag * phi ** scipy.linalg.toeplitz(range(0, d), range(0, d))
+    SIGMA = gamma ** 2 * (np.tril(SIGMA) + np.triu(SIGMA.T) - np.diag(np.full(d,diag)))
+    return SIGMA
+
+# print(get_SAD1(par = [0.5,2],d = 5))
+def get_mu(par, d):
+    mu = par[0]*d**par[1]
+    return mu
+
+times = np.arange(1, 11)
+d = len(times)
+real_mu_par = np.array([[1, 0.5], [2, -0.5], [1.5, 0.2]])
+real_cov_par = np.array([0.5, 2])
+n1 = 10000
+n2 = 10000
+n3 = 20000
+n = n1+n2+n3
+real_pro = np.array([n1/n, n2/n, n3/n])
+
+X1 = np.random.multivariate_normal(get_mu(real_mu_par[0], np.linspace(1,10,10)),
+                                   get_SAD1(pars=[0.5, 2], d=d), n1)
+X2 = np.random.multivariate_normal(get_mu(real_mu_par[1], np.linspace(1,10,10)),
+                                   get_SAD1(pars=[0.5, 2], d=d), n2)
+X3 = np.random.multivariate_normal(get_mu(real_mu_par[2], np.linspace(1,10,10)),
+                                   get_SAD1(pars=[0.5, 2], d=d), n3)
+X = np.vstack((X1, X2, X3))
+
+
+####set of functions to model mu and sigma in Functional Clustering
+def get_SAD1(pars, d):
+    """SAD1 covariance structure.
+    return a dxd size of covariance matrix regardless of times(length=d)
+    only accept two parameters to model such matrix"""
+    phi, gamma = pars[0], pars[1]
+    diag = (1 - phi ** (2 * torch.tensor(range(1, d + 1), device=device))) / (1 - phi ** 2)
+    SIGMA = diag * phi ** torch.tensor(scipy.linalg.toeplitz(range(0, d), range(0, d)))
+    SIGMA = gamma ** 2 * (SIGMA.tril() + SIGMA.T.triu() - torch.diag(diag))
+    return SIGMA
+
+def get_AR1(pars, d):
+    """AR1 covariance structure.
+     return a dxd size of covariance matrix regardless of times(length=d)
+     only accept two parameters to model such matrix"""
+    sigma, phi = pars[0], pars[1]
+    base = toeplitz(np.linspace(1, d, d))
+    V = 1 / (1 - phi ** 2) * phi ** base
+    SIGMA = sigma ** 2 * V
+    return SIGMA
+
+def get_mu_PE(pars, times):
+    """power equation to model mu."""
+    a, b = pars[0], pars[1]
+    mu = a * times ** b
+    return mu
+
+def get_mu_GC(pars, times):
+    """logistic growth equation to model mu."""
+    a, b, r = pars[0], pars[1], pars[2]
+    mu = a / (1 + b * np.exp(-r * times))
+    return mu
+
+def get_mu_PE_init(x,times):
+    #eps = np.finfo(float).eps
+    #slope, intercept, r, p, se = scipy.stats.linregress(times, np.log(x+eps))
+    #a_init, b_init = np.exp(intercept), slope
+    par_est = scipy.optimize.curve_fit(lambda x, a, b: a * np.power(x,b),
+                                        xdata=times,
+                                        ydata=x,
+                                        #p0=[a_init, b_init],
+                                        maxfev=10000000)[0]
+    return par_est
+
+MODEL_MU = {
+    'power_equation': get_mu_PE,
+    'growth_curve': get_mu_GC,
+}
+
+MODEL_SIGMA = {
+    'SAD1': get_SAD1,
+    'AR1': get_AR1,
+}
+####
+def get_SAD1_inv(pars, d):
+    phi, gamma = pars[0], pars[1]
+    diag_element = (1.0 + phi ** 2) / gamma ** 2
+    diag_element1 = - phi / gamma ** 2
+    sigma_inv = torch.eye(d)
+    sigma_inv.diagonal().copy_(diag_element)
+    sigma_inv.diagonal(1).copy_(diag_element1)
+    sigma_inv.diagonal(-1).copy_(diag_element1)
+    return sigma_inv
+
+def get_SAD1_det_log(pars, d):
+    phi, gamma = pars[0], pars[1]
+    sigma_det_log = 2 * torch.tensor(d) * torch.log(gamma)
+    return sigma_det_log
+
+def get_SAD1_L(pars, d):
+    """cholesky decomposition of SAD1"""
+    phi, gamma = pars[0], pars[1]
+    sigma = gamma * phi ** torch.tensor(scipy.linalg.toeplitz(range(0, d)))
+    sigma_L = sigma.tril()
+    return sigma_L
+
+def MVN_special(X, times, pars_mu, pars_sigma):
+    r"""
+    Modified MultivariateNormal Distribution, directly calculate the mahalanobis distance
+    """
+    N, D = X.shape
+    mu = get_mu_PE(pars_mu, times)
+    # sigma_inv = self._get_SAD1_inv(pars_sigma, self.d)
+    SAD1_det_log = get_SAD1_det_log(pars_sigma, D)
+    sigma_L = get_SAD1_L(pars_sigma, D)
+
+    constant = 0.5 * D * torch.log( torch.tensor(2.0) * torch.pi)  # constant part
+    #half_log_det = 0.5 * SAD1_det_log  # log_det part of sigma
+    #M = torch.linalg.solve(sigma_L.expand(N, D, D), X - mu) ** 2  # mahalanobis distance
+    #Loglikelihood = constant + 0.5 * torch.sum(M, axis=1) + half_log_det #legacy method,slower
+    M = torch.distributions.multivariate_normal._batch_mahalanobis(sigma_L, X - mu)
+    Loglikelihood = constant + 0.5 * ( M + SAD1_det_log )
+    return -Loglikelihood
+
+
+class FunClu_torch(object):
+    def __init__(self, X, times, K=3, seed=None,method_mu='power_equation',method_sigma='SAD1'):
+        self.elbo = None
+        self.parameters = {}
+        self.hyperparameters = {
+            "K": K,
+            "seed": seed,
+            "bounds_l_mu": None,
+            "bounds_u_mu": None,
+            "bounds_l_sig": None,
+            "bounds_u_sig": None,
+            "model_mu": method_mu,
+            "model_sigma": method_sigma,
+        }
+        self.eps = np.finfo(float).eps
+        self.is_fit = False
+
+        # dataset attribute
+        self.X = X
+        self.times = times
+        self.N, self.D = self.X.shape  # (N x D matrix)
+
+        # method
+        self.f_mu = MODEL_MU[method_mu]
+        self.f_sigma = MODEL_SIGMA[method_sigma]
+
+        if seed:
+            np.random.seed(seed)
+
+        if method_sigma == "SAD1":
+            self.hyperparameters['bounds_l_sig'] = np.array([0.0, 0.0])
+            self.hyperparameters['bounds_u_sig'] = np.array([0.99, 5.0])
+
+    def _initialize_params(self):
+        """Randomly initialize the starting FunClu parameters."""
+        K = self.hyperparameters["K"]
+
+        # apply kmeans to get center
+        kmeans = KMeans(n_clusters=K, n_init='auto')
+        kmeans.fit(self.X)
+        center = kmeans.cluster_centers_
+        pars_prob = torch.tensor(np.unique(kmeans.labels_, return_counts=True)[1] / self.N)
+
+        ### NOTICE: currently only work for power equation initial guess ###
+        pars_mu_init = torch.tensor(list(map(get_mu_PE_init, center, np.tile(self.times, (K, 1)))),
+                                    requires_grad=True)
+        pars_sigma_init = torch.tensor([0.3, 0.5], requires_grad=True)
+
+        self.parameters = {
+            "prob": pars_prob,  # cluster priors
+            "Q": torch.zeros((self.N, K)),  # variational distribution q(T)
+            "pars_mu": pars_mu_init,  # cluster means
+            "pars_sigma": pars_sigma_init,  # cluster covariances
+        }
+
+        #convert dataset to tensor
+        self.X = torch.tensor(self.X, requires_grad=False)
+        self.times = torch.tensor(self.times, requires_grad=False)
+
+        self.elbo = None
+        self.is_fit = False
+
+    def likelihood_lower_bound(self):
+        """Compute the LLB under the current parameters."""
+        P = self.parameters
+        K = self.hyperparameters["K"]
+        prob, Q, pars_mu, pars_sigma = P["prob"], P["Q"], P["pars_mu"], P["pars_sigma"]
+
+        #mu = list(map(lambda k: self.f_mu(k, self.times), pars_mu))
+        #sigma = self.f_sigma(pars_sigma, self.D) #Can be ignored
+        mvn_log = list(map(lambda k: MVN_special(self.X, self.times, k, pars_sigma), pars_mu))
+        mvn = torch.stack(mvn_log).T + torch.log(prob).expand(self.N, K)
+        LLB = torch.sum(Q * mvn - Q * torch.log(Q + self.eps))
+
+        return -LLB
+
+    def _E_step(self):
+        P = self.parameters
+        K = self.hyperparameters["K"]
+        prob, Q, pars_mu, pars_sigma = P["prob"], P["Q"], P["pars_mu"], P["pars_sigma"]
+
+        mu = list(map(lambda k: self.f_mu(k, self.times), pars_mu))
+        #sigma = self.f_sigma(pars_sigma, self.D)
+
+        #mvn_log = list(map(lambda k: torch.distributions.MultivariateNormal(k, sigma).log_prob(self.X), mu))
+        mvn_log = list(map(lambda k: MVN_special(self.X, self.times, k, pars_sigma), pars_mu)) #use new one instead
+        mvn = torch.stack(mvn_log).T + torch.log(prob).expand(self.N, K)  # log N(X_i | mu_c, Sigma_c) + log pi_c
+
+        # log \sum_c exp{ log N(X_i | mu_c, Sigma_c) + log pi_c } ]
+        Q_log = mvn - torch.logsumexp(mvn, 1).expand(K, self.N).T
+        P["Q"] = torch.exp(Q_log).detach() #no grad
+
+    def _M_step(self, n_epochs = 100):
+        P = self.parameters
+        K = self.hyperparameters["K"]
+        prob, Q, pars_mu, pars_sigma = P["prob"], P["Q"], P["pars_mu"], P["pars_sigma"]
+        # update cluster priors
+        P["prob"] = (torch.sum(Q, dim=0) / self.N).detach() + torch.tensor(self.eps) #no grad
+
+        # update  cluster means and covariances
+        optimizer = torch.optim.Adam([pars_mu, pars_sigma], lr=1e-2) #optimizer
+        for epoch in range(1, n_epochs + 1):
+            mu = list(map(lambda k: self.f_mu(k, self.times), pars_mu))
+            #sigma = self.f_sigma(pars_sigma, self.D)
+            mvn_log = list(map(lambda k: MVN_special(self.X, self.times, k, pars_sigma), pars_mu))
+            mvn = torch.stack(mvn_log).T + torch.log(prob).expand(self.N, K)
+            LLB = -torch.sum(Q * mvn - Q * torch.log(Q + self.eps))
+            optimizer.zero_grad()
+            LLB.backward()
+            optimizer.step()
+
+        P["pars_mu"], P["pars_sigma"] = pars_mu, pars_sigma
+
+    def fit(self, max_iter=100, tol=1e-3, verbose=True):
+        prev_vlb = -np.inf
+        self._initialize_params()
+
+        for _iter in range(max_iter):
+            try:
+                self._E_step()
+                self._M_step()
+                vlb = self.likelihood_lower_bound().detach()
+                if verbose:
+                    print(f"iter = {_iter + 1}. log-likelihood lower bound = {vlb}")
+
+                converged = _iter > 0 and torch.abs(vlb - prev_vlb) <= tol
+                if torch.isnan(vlb) or converged:
+                    break
+
+                prev_vlb = vlb
+
+            except torch.linalg.LinAlgError:
+                print("Singular matrix: components collapsed")
+                return -1
+
+        self.elbo = vlb
+        self.is_fit = True
+        return 0
+
+    def predict(self, X, soft_labels=True):
+        assert self.is_fit, "Must call the `.fit` method before making predictions"
+
+        P = self.parameters
+        K = self.hyperparameters["K"]
+        pars_mu, pars_sigma = P["pars_mu"], P["pars_sigma"]
+
+        return P
+
+    def BIC(self):
+        assert self.is_fit, "Must call the `.fit` method before making predictions"
+
+        P = self.parameters
+        K = self.hyperparameters["K"]
+        prob, Q, pars_mu, pars_sigma = P["prob"], P["Q"], P["pars_mu"], P["pars_sigma"]
+        vlb = self.likelihood_lower_bound().detach()
+        BIC = 2 * vlb + np.log(self.N) * (pars_mu.size()[0] * pars_mu.size()[1] + 2 + K - 1)
+        return BIC
+
+    def test(self):
+        self._initialize_params()
+        P = self.parameters
+        K = self.hyperparameters["K"]
+        prob, Q, pars_mu, pars_sigma = P["prob"], P["Q"], P["pars_mu"], P["pars_sigma"]
+
+        return self.X, self.times, pars_mu, pars_sigma
+
+
+
+
+def func():
+    print('func start')
+    K = 5
+    model = FunClu_torch(K=K, X=X, times=times)
+    model.fit(max_iter=10)
+    print('func end')
+
+import time
+t = time.time()
+func()
+print(f'coast:{time.time() - t:.8f}s')
+
+
